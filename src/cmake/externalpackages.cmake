@@ -87,8 +87,8 @@ endif ()
 
 
 # Ultra HDR
-checked_find_package (libuhdr)
-
+checked_find_package (libuhdr
+                      VERSION_MIN 1.3)
 
 checked_find_package (TIFF REQUIRED
                       VERSION_MIN 4.0)
@@ -113,7 +113,9 @@ else ()
 endif()
 
 # From pythonutils.cmake
-find_python()
+if (USE_PYTHON)
+    find_python()
+endif ()
 if (USE_PYTHON)
     checked_find_package (pybind11 REQUIRED VERSION_MIN 2.7)
 endif ()

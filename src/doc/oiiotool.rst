@@ -165,6 +165,7 @@ contents of an expression may be any of:
     be printed with `oiiotool -stats`.
   * `IS_CONSTANT`: metadata to check if the image pixels are of constant color, returns 1 if true, and 0 if false.
   * `IS_BLACK`: metadata to check if the image pixels are all black, a subset of IS_CONSTANT. Also returns 1 if true, and 0 if false.
+  * `SUBIMAGES`: the number of subimages in the file.
   
 * *imagename.'metadata'*
 
@@ -932,6 +933,11 @@ output each one to a different file, with names `sub0001.tif`,
     Sets "no clobber" mode, in which existing images on disk will never be
     overridden, even if the `-o` command specifies that file.
 
+.. option:: --create-dir
+
+    Create output directories if it doesn't exists already 
+    during the `-o` output action.
+
 .. option:: --threads <n>
 
     Use *n* execution threads if it helps to speed up image operations. The
@@ -1180,8 +1186,13 @@ Reading images
 
     Optional appended modifiers include:
 
+      `:native=` *int*
+        If nonzero, read the image in as close as possible to its "native"
+        format, versus oiiotool's default of converting all images to float
+        internally. This also turns on "now". (Added in release 3.0.6.0.)
       `:now=` *int*
-        If 1, read the image now, before proceeding to the next command.
+        If nonzero, read the image now, before proceeding to the next command
+        (bypassing the ImageCache, even for big images).
       `:autocc=` *int*
         Enable or disable `--autocc` for this input image (the default is to use
         the global setting).
@@ -2026,6 +2037,13 @@ current top image.
         Only included subimages will have the attribute changed. If subimages
         are not set, only the first subimage will be changed, or all subimages
         if the `-a` command line flag was used.
+      
+      `:fromfile=` *int*
+        When set to 1, the next argument will be interpreted as
+        the name of a file containing a list of patterns to erase, for example:
+        `--eraseattrib:fromfile=1 patterns.txt`,
+        The patterns will be case insensitive and one pattern per line of the file.
+        Default value is 0 (False).
 
     Examples::
 
@@ -2037,6 +2055,13 @@ current top image.
     
         # Remove all metadata
         oiiotool in.exr --eraseattrib:subimages=all ".*" -o no_metadata.exr
+
+        # Remove all attribute that match any regex in text file
+        oiiotool in.exr --eraseattrib:fromfile=1 no_gps_make.txt -o no_gps_make_metadata.exr
+
+        Example contents of file no_gps_make.txt:
+            Make
+            GPS:.*
 
 
 .. option:: --orientation <orient>
@@ -2996,19 +3021,39 @@ current top image.
 
 .. option:: --pastemeta <location>
 
-    Takes two images -- the first will be a source of metadata only, and the
-    second the source of pixels -- and produces a new copy of the second
-    image with the metadata from the first image added.
+    Takes two images -- the first image will be a source of metadata only, and the
+    second "destination" image will supply the pixels -- and produces a combined
+    image.
 
-    The output image's pixels will come only from the second input. Metadata
-    from the second input will be preserved if no identically-named metadata
-    was present in the first input image.
+    Optional appended modifiers include:
+
+    - `merge=` *int* : Determines the metadata merging strategy. If `0` (the
+      default), performs a full replacement -- the metadata from the
+      destination (second) image will be discarded entirely and re-populated
+      with the metadata from the metadata source (first) image. If `1`,
+      metadata from the source image will be non-destructively added to that
+      of the existing metadata of the destination image, item by item, if it
+      doesn't already contain metadata with the same name. If `2`, metadata
+      from the source image will be destructively added to that of the
+      existing metadata of the destination image, item by item, and will
+      replace any metadata already present having the same name. (This
+      modifier was added in OIIO 3.0.4.)
+
+    - `pattern=` *regex* : If supplied, only copies metadata whose name
+      matches has a substring matching the regular expression. The special
+      character `^` indicates the beginning of the string and `$` indicates
+      the end of the string. (This modifier was added in OIIO 3.0.4.)
 
     Examples::
 
-        # Add all the metadata from meta.exr to pixels.exr and write the
-        # combined image to out.exr.
+        # Add all the metadata from meta.exr to pixels.exr, discarding any
+        # metadata it previously had, and write the combined image to out.exr.
         oiiotool meta.exr pixels.exr --pastemeta -o out.exr
+
+        # Add all of meta.exr's metadata whose name begins with "camera:"
+        # to pixels.exr, replacing any identically named items but leaving
+        # others as they were, and write the combined image to out.exr.
+        oiiotool meta.exr pixels.exr --pastemeta:merge=2:pattern="^camera:override=1" -o out.exr
 
 
 .. option:: --mosaic <size>
@@ -4183,6 +4228,16 @@ current top image.
       `shadow=` *size*
         if nonzero, will make a dark shadow halo to make the text more clear
         on bright backgrounds.
+      `measure=` *int*
+        if nonzero, will compute the rendered size of the text and store its
+        dimensions in the "user variables" (as if by `--set`) `TEXT_X`,
+        `TEXT_Y`, `TEXT_WIDTH`, `TEXT_HEIGHT`. (This modifier was added
+        in OpenImageIO 3.0.5.0.)
+      `render=` *int*
+        if zero, will not actually draw the text into the image (the
+        default is 1, meaning that the text will draw). Suppressing the
+        drawing is primarily useful in conjunction with `measure=1`.
+        (This modifier was added in OpenImageIO 3.0.5.0.)
       `:subimages=` *indices-or-names*
         Include/exclude subimages (see :ref:`sec-oiiotool-subimage-modifier`).
 
@@ -4226,20 +4281,41 @@ current top image.
     Optional appended modifiers include:
 
       `pattern=` *name*
-        sensor pattern. Currently supported patterns: "bayer", "xtrans".
+        sensor pattern. Currently supported patterns: "auto"(default), "bayer",
+        "xtrans". In the "auto" mode the pattern is deducted from the
+        "raw:FilterPattern" attribute of the source image buffer, defaulting to
+        "bayer" if absent.
       `layout=` *name*
-        photosite order of the specified pattern. The default value is "RGGB"
-        for Bayer, and "GRBGBR BGGRGG RGGBGG GBRGRB RGGBGG BGGRGG" for X-Trans.
+        The order the color filter array elements are arranged in,
+        pattern-specific. The Bayer pattern sensors usually have 4 values in the
+        layout string, describing the 2x2 pixels region. The X-Trans pattern
+        sensors have 36 values in the layout string, describing the 6x6 pixels
+        region (with optional whitespaces separating the rows). When set to
+        "auto", OIIO will try to fetch the layout from the "raw:FilterPattern"
+        attribute of the source image buffer, falling back to "RGGB" for Bayer,
+        "GRBGBR BGGRGG RGGBGG GBRGRB RGGBGG BGGRGG" for X-Trans if absent.
       `algorithm=` *name*
-        the name of the algorithm to use.
+        the name of the algorithm to use, defaults to "auto".
         The Bayer-pattern algorithms:
         - "linear"(simple bilinear demosaicing),
-        - "MHC"(Malvar-He-Cutler algorithm).
+        - "MHC"(Malvar-He-Cutler algorithm),
+        - "auto"(same as "MHC").
         The X-Trans-pattern algorithms:
-        - "linear"(simple bilinear demosaicing).
-      `white-balance=` *v1,v2,v3...*
+        - "linear"(simple bilinear demosaicing),
+        - "auto"(same as "linear").
+      `white_balance_mode=` *name*
+        white-balancing mode to use. The supported modes are:
+        - "auto"(OIIO will try to fetch the white balancing weights from the
+        "raw:WhiteBalance" attribute of the source image buffer, falling back to
+        {1.0, 1.0, 1.0, 1.0} if absent),
+        - "manual"(The white balancing weights will be taken from the attribute
+        "white-balance" (see below) if present, falling back to
+        {1.0, 1.0, 1.0, 1.0} if absent),
+        - "none"(no white balancing will be performed).
+      `white_balance=` *v1,v2,v3...*
         optional white balance weights, can contain either three (R,G,B) or four
-        (R,G1,B,G2) values. The order of the white balance multipliers is as
+        (R,G1,B,G2) values, only used when the white-balancing mode (see above)
+        is set to "manual". The order of the white balance multipliers is as
         specified, it does not depend on the matrix layout.
 
     Examples::
@@ -4248,7 +4324,7 @@ current top image.
             --output out.exr
 
          oiiotool --iconfig raw:Demosaic none --input test.cr3 \
-            --demosaic:pattern=bayer:layout=GRBG:algorithm=MHC:white_balance=2.0,0.8,1.2,1.5 \
+            --demosaic:pattern=bayer:layout=GRBG:algorithm=MHC:white_balance_mode=manual:white_balance=2.0,0.8,1.2,1.5 \
             --output out.exr
 
 
@@ -4730,7 +4806,3 @@ General commands that also work for deep images
     `NaN` or `Inf` values (hereafter referred to collectively as
     "nonfinite") are repaired.  The *strategy* may be either `black` or
     `error`.
-
-
-
-

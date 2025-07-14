@@ -42,10 +42,10 @@ tiles.
      - The compression of the BMP file (``"rle4"`` or ``"rle8"``, if
        RLE compression is used).
    * - ``XResolution``
-     - float
+     - int
      - hres
    * - ``YResolution``
-     - float
+     - int
      - vres
    * - ``ResolutionUnit``
      - string
@@ -425,10 +425,10 @@ the `set_ioproxy()` methods.
      - reference high quantity
    * - ``dpx:XScannedSize``
      - float
-     - X scanned size
+     - X scanned size in millimeters
    * - ``dpx:YScannedSize``
      - float
-     - Y scanned size
+     - Y scanned size in millimeters
    * - ``dpx:FramePosition``
      - int
      - frame position in sequence
@@ -1345,11 +1345,11 @@ control aspects of the writing itself:
        For lossy, higher effort should more accurately reach the target quality.
    * - ``jpegxl:speed``
      - int
-     - Sets the encoding speed tier for the provided options. Minimum is 0
-       (slowest to encode, best quality/density), and maximum is 4 (fastest to
-       encode, at the cost of some quality/density). Default is 0.
-       (Note: in libjxl it named JXL_ENC_FRAME_SETTING_DECODING_SPEED. But it
-       is about encoding speed and compression quality, not decoding speed.)
+     - Sets the decoding speed tier. Values 1 to 4 offer progressively
+       faster decoding speed but lower compression ratio.
+       Encoding speed is variable between levels, but still moderated
+       with the effort setting. Default value is 0 for highest compression
+       ratio/quality but slowest decoding.
    * - ``jpegxl:photon_noise_iso``
      - float
      - (ISO_FILM_SPEED) Adds noise to the image emulating photographic film or
@@ -1543,8 +1543,9 @@ The official OpenEXR site is http://www.openexr.com/.
    * - ``compression``
      - string
      - one of: ``"none"``, ``"rle"``, ``"zip"``, ``"zips"``, ``"piz"``,
-       ``"pxr24"``, ``"b44"``, ``"b44a"``, ``"dwaa"``, or ``"dwab"``.  If
-       the writer receives a request for a compression type it does not
+       ``"pxr24"``, ``"b44"``, ``"b44a"``, ``"dwaa"``, ``"dwab"`` or ``"htj2k"``.
+       (``"htj2k"`` is only supported with OpenEXR 3.4 or later.)
+       If the writer receives a request for a compression type it does not
        recognize or is not supported by the version of OpenEXR on the
        system, it will use ``"zip"`` by default. For ``"dwaa"`` and
        ``"dwab"``, the dwaCompressionLevel may be optionally appended to the
@@ -2274,7 +2275,12 @@ options are supported:
      - Maximum memory allocation for processing of raw images. Stop processing if
        raw buffer size grows larger than that value (in megabytes).
        (Default: 2048)
-
+   * - ``raw:ForceLoad``
+     - int
+     - If 1, forces libraw to decompress and process the image during
+       initialization. This populates the image attributes which depend on the
+       pixel values.
+       (Default: 0)
 
 |
 
@@ -3107,6 +3113,11 @@ attributes are supported:
      - ptr
      - Pointer to a ``Filesystem::IOProxy`` that will handle the I/O, for
        example by reading from memory rather than the file system.
+   * - ``oiio:UnassociatedAlpha``
+     - int
+     - If nonzero, will leave alpha unassociated (versus the default of
+       premultiplying color channels by alpha if the alpha channel is
+       unassociated).
 
 **Configuration settings for WebP output**
 
@@ -3129,6 +3140,25 @@ control aspects of the writing itself:
      - ptr
      - Pointer to a ``Filesystem::IOProxy`` that will handle the I/O, for
        example by writing to a memory buffer.
+   * - ``oiio:UnassociatedAlpha``
+     - int
+     - If nonzero, indicates that the data being passed is already in
+       unassociated form (non-premultiplied colors) and should stay that way
+       for output rather than being assumed to be associated and get automatic
+       un-association to store in the file.
+   * - ``Compression``
+     - string
+     - If supplied, can be either ``"webp:quality"`` or ``"lossless:quality"``
+       where quality can be an integer between 0 and 100, and where using "webp"
+       indicates a request for lossy compression. For lossy, 0 gives the smallest
+       size and 100 the largest. For lossless, this parameter is the amount of effort
+       put into the compression: 0 is the fastest but gives larger files compared to
+       the slowest, but best, 100. The default, if quality is not specified, is
+       100 for lossy and 70 for lossless.
+   * - ``webp:method``
+     - int
+     - A general quality/speed trade-off (0=fast, 6=slower-better) for both
+       lossy and lossless image encoding. The default is 6.
 
 **Custom I/O Overrides**
 

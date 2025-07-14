@@ -276,11 +276,12 @@ Oiiotool::express_parse_atom(const string_view expr, string_view& s,
                     out << (i ? "," : "") << pixstat.avg[i];
                 result = out.str();
             } else if (metadata == "NONFINITE_COUNT") {
-                auto pixstat    = ImageBufAlgo::computePixelStats((*img)(0, 0));
-                imagesize_t sum = std::accumulate(pixstat.nancount.begin(),
-                                                  pixstat.nancount.end(), 0)
-                                  + std::accumulate(pixstat.infcount.begin(),
-                                                    pixstat.infcount.end(), 0);
+                auto pixstat = ImageBufAlgo::computePixelStats((*img)(0, 0));
+                imagesize_t sum
+                    = std::accumulate(pixstat.nancount.begin(),
+                                      pixstat.nancount.end(), imagesize_t(0))
+                      + std::accumulate(pixstat.infcount.begin(),
+                                        pixstat.infcount.end(), imagesize_t(0));
                 result = Strutil::to_string(sum);
             } else if (metadata == "META" || metadata == "METANATIVE") {
                 std::stringstream out;
@@ -338,6 +339,8 @@ Oiiotool::express_parse_atom(const string_view expr, string_view& s,
                     // Not even constant color case -> We don't want those to count as black frames.
                     result = "0";
                 }
+            } else if (metadata == "SUBIMAGES") {
+                result = Strutil::to_string(img->subimages());
 
             } else if (using_bracket) {
                 // For the TOP[meta] syntax, if the metadata doesn't exist,

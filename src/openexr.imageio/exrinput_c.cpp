@@ -106,7 +106,7 @@ public:
                 || feature == "exif"  // Because of arbitrary_metadata
                 || feature == "ioproxy"
                 || feature == "iptc"  // Because of arbitrary_metadata
-                || feature == "multiimage");
+                || feature == "multiimage" || feature == "mipmap");
     }
     bool valid_file(const std::string& filename) const override;
     bool open(const std::string& name, ImageSpec& newspec,
@@ -368,7 +368,7 @@ OpenEXRCoreInput::open(const std::string& name, ImageSpec& newspec,
             // missingcolor as numeric array
             int n = m->type().basevalues();
             m_missingcolor.clear();
-            m_missingcolor.reserve(n);
+            m_missingcolor.resize(n);
             for (int i = 0; i < n; ++i)
                 m_missingcolor[i] = m->get_float(i);
         }
@@ -571,6 +571,9 @@ OpenEXRCoreInput::PartInfo::parse_header(OpenEXRCoreInput* in,
         case EXR_COMPRESSION_B44A: comp = "b44a"; break;
         case EXR_COMPRESSION_DWAA: comp = "dwaa"; break;
         case EXR_COMPRESSION_DWAB: comp = "dwab"; break;
+#ifdef IMF_HTJ2K_COMPRESSION
+        case EXR_COMPRESSION_HTJ2K: comp = "htj2k"; break;
+#endif
         default: break;
         }
         if (comp)
@@ -901,8 +904,10 @@ OpenEXRCoreInput::PartInfo::query_channels(OpenEXRCoreInput* in,
     spec.nchannels = 0;
     const exr_attr_chlist_t* chlist;
     exr_result_t rv = exr_get_channels(ctxt, subimage, &chlist);
-    if (rv != EXR_ERR_SUCCESS)
+    if (rv != EXR_ERR_SUCCESS) {
+        in->errorfmt("exr_get_channels failed");
         return false;
+    }
 
     std::vector<CChanNameHolder> cnh;
     int c = 0;
@@ -1050,8 +1055,11 @@ OpenEXRCoreInput::seek_subimage(int subimage, int miplevel)
 
     PartInfo& part(m_parts[subimage]);
     if (!part.initialized) {
-        if (!part.parse_header(this, m_exr_context, subimage, miplevel))
+        if (!part.parse_header(this, m_exr_context, subimage, miplevel)) {
+            errorfmt("Could not seek to subimage={}: unable to parse header",
+                     subimage, miplevel);
             return false;
+        }
         part.initialized = true;
     }
 
@@ -1062,6 +1070,11 @@ OpenEXRCoreInput::seek_subimage(int subimage, int miplevel)
 
     m_miplevel = miplevel;
     m_spec     = part.spec;
+
+    //! Add the number of miplevels as an attribute for the first miplevel.
+    //! TOFIX: adding the following attribute breaks unit tests
+    // if (m_miplevel == 0 && part.nmiplevels > 1)
+    //     m_spec.attribute("oiio:miplevels", part.nmiplevels);
 
     if (miplevel == 0 && part.levelmode == EXR_TILE_ONE_LEVEL) {
         return true;
@@ -1079,6 +1092,8 @@ OpenEXRCoreInput::seek_subimage(int subimage, int miplevel)
 ImageSpec
 OpenEXRCoreInput::spec(int subimage, int miplevel)
 {
+    // By design, spec() inicates failure with empty spec, it does not call
+    // errorfmt().
     ImageSpec ret;
     if (subimage < 0 || subimage >= m_nsubimages)
         return ret;  // invalid
@@ -1104,6 +1119,8 @@ OpenEXRCoreInput::spec(int subimage, int miplevel)
 ImageSpec
 OpenEXRCoreInput::spec_dimensions(int subimage, int miplevel)
 {
+    // By design, spec_dimensions() inicates failure with empty spec, it does
+    // not call errorfmt().
     ImageSpec ret;
     if (subimage < 0 || subimage >= m_nsubimages)
         return ret;  // invalid
@@ -1209,10 +1226,11 @@ OpenEXRCoreInput::read_native_scanlines(int subimage, int miplevel, int ybegin,
     parallel_for_chunked(
         ychunkstart, yend, scansperchunk,
         [&](int64_t yb, int64_t ye) {
-            int y             = std::max(int(yb), ybegin);
+            int y = std::max(int(yb), ybegin);
+            DBGEXR("reading y={}\n", y);
             uint8_t* linedata = static_cast<uint8_t*>(data)
                                 + scanlinebytes * (y - ybegin);
-            std::unique_ptr<uint8_t[]> fullchunk;
+            default_init_vector<uint8_t> fullchunk;
             int nlines = scansperchunk;
             exr_chunk_info_t cinfo;
             exr_decode_pipeline_t decoder = EXR_DECODE_PIPELINE_INITIALIZER;
@@ -1225,18 +1243,18 @@ OpenEXRCoreInput::read_native_scanlines(int subimage, int miplevel, int ybegin,
             if (invalid != 0) {
                 // Our first scanline, ybegin, is not on a chunk boundary.
                 // We'll need to "back up" and read a whole chunk.
-                fullchunk.reset(new uint8_t[scanlinebytes * scansperchunk]);
+                fullchunk.resize(scanlinebytes * scansperchunk);
+                cdata  = fullchunk.data();
                 nlines = scansperchunk - invalid;
-                cdata  = fullchunk.get();
                 y      = y - invalid;
             } else if ((y + scansperchunk) > yend && yend < endy) {
                 // ybegin is at a chunk boundary, but yend is not (and isn't
                 // the special case of it encompassing the end of the image,
                 // which is not at a chunk boundary). We'll need to read a
                 // full chunk and use only part of it.
-                fullchunk.reset(new uint8_t[scanlinebytes * scansperchunk]);
+                fullchunk.resize(scanlinebytes * scansperchunk);
+                cdata  = fullchunk.data();
                 nlines = yend - y;
-                cdata  = fullchunk.get();
             } else {
                 // We need a full aligned chunk. Everything is already set up.
             }
@@ -1268,8 +1286,19 @@ OpenEXRCoreInput::read_native_scanlines(int subimage, int miplevel, int ybegin,
             if (rv == EXR_ERR_SUCCESS)
                 rv = exr_decoding_run(m_exr_context, subimage, &decoder);
             if (rv != EXR_ERR_SUCCESS) {
-                ok = false;
-            } else if (cdata != linedata) {
+                if (check_fill_missing(spec.x, spec.x + spec.width, y,
+                                       y + nlines, 0, 1, chbegin, chend,
+                                       cdata + invalid * scanlinebytes,
+                                       pixelbytes, scanlinebytes)) {
+                    // clear the error
+                    DBGEXR("cfm true y={} {}-{}\n", y, yb, ye);
+                    rv = EXR_ERR_SUCCESS;
+                } else {
+                    DBGEXR("cfm false {}-{}\n", yb, ye);
+                    ok = false;
+                }
+            }
+            if (rv == EXR_ERR_SUCCESS && cdata != linedata) {
                 y += invalid;
                 nlines = std::min(nlines, yend - y);
                 memcpy(linedata, cdata + invalid * scanlinebytes,
@@ -1414,7 +1443,7 @@ OpenEXRCoreInput::read_native_tiles(int subimage, int miplevel, int xbegin,
                                     int zend, void* data)
 {
     if (!m_exr_context) {
-        errorfmt("called OpenEXRInput::read_native_tile without an open file");
+        errorfmt("called OpenEXRInput::read_native_tiles without an open file");
         return false;
     }
 
@@ -1433,7 +1462,7 @@ OpenEXRCoreInput::read_native_tiles(int subimage, int miplevel, int xbegin,
                                     void* data)
 {
     if (!m_exr_context) {
-        errorfmt("called OpenEXRInput::read_native_tile without an open file");
+        errorfmt("called OpenEXRInput::read_native_tiles without an open file");
         return false;
     }
 

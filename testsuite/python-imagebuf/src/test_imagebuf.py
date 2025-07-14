@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # https://github.com/AcademySoftwareFoundation/OpenImageIO
 
+from __future__ import annotations
 
 import array
 import numpy
@@ -11,7 +12,7 @@ import OpenImageIO as oiio
 
 
 # Print the contents of an ImageSpec
-def print_imagespec (spec, subimage=0, mip=0, msg="") :
+def print_imagespec (spec: oiio.ImageSpec, subimage=0, mip=0, msg="") :
     if msg != "" :
         print (str(msg))
     if spec.depth <= 1 :
@@ -39,9 +40,9 @@ def print_imagespec (spec, subimage=0, mip=0, msg="") :
     print ("  deep = ", spec.deep)
     for attrib in spec.extra_attribs :
         if type(attrib.value) == str :
-            print (" ", attrib.name, "= \"" + attrib.value + "\"")
+            print ("  {} = \"{}\"".format(attrib.name, attrib.value))
         else :
-            print (" ", attrib.name, "=", attrib.value)
+            print ("  {} = {}".format(attrib.name,attrib.value))
     # Equivalent, using indexing rather than iterating:
     #for i in range(len(spec.extra_attribs)) :
     #    if type(spec.extra_attribs[i].value) == str :
@@ -50,11 +51,28 @@ def print_imagespec (spec, subimage=0, mip=0, msg="") :
     #        print (" ", spec.extra_attribs[i].name, "=", spec.extra_attribs[i].value)
 
 
-def write (image, filename, format=oiio.UNKNOWN) :
+def write (image, filename: str, format=oiio.UNKNOWN) :
     if not image.has_error :
         image.write (filename, format)
     if image.has_error :
         print ("Error writing", filename, ":", image.geterror())
+
+
+
+def test_repr_png () :
+    # Test a valid 16 bit exr
+    b = oiio.ImageBuf("src/AllHalfValues.exr")
+    png = b._repr_png_()
+
+    with open("valid_repr_png.png", "wb") as f:
+        f.write(png)
+    
+    # Test an invalid image with null dimensions
+    # create ImageBuf with x dimension as 0
+    b = oiio.ImageBuf(oiio.ImageSpec(0,2,4,"float"))
+    png = b._repr_png_()
+    with open("invalid_repr_png.png", "wb") as f:
+        f.write(png)
 
 
 
@@ -118,6 +136,7 @@ def test_multiimage () :
     print ("Writing multi-image file")
     spec = oiio.ImageSpec (128, 64, 3, "float")
     out = oiio.ImageOutput.create ("multipart.exr")
+    assert out is not None
     # Open with intent to write two subimages, each with same spec
     if not out.open ("multipart.exr", (spec, spec)) :
         print ("Error on initial open:", out.geterror())
@@ -147,6 +166,60 @@ def test_uninitialized () :
 # in order to mask LSB differences between platforms.
 def ftupstr(tup) :
     return "(" + ", ".join(["{:.5}".format(x) for x in tup]) + ")"
+
+
+# Test the functionality of metadata copying and merging
+def test_copy_metadata() :
+    print ("\nTesting metadata copying")
+    # specA has numerical abc and def
+    specA = oiio.ImageSpec(64, 64, 3, "uint8")
+    specA.attribute("abc", 1)
+    specA.attribute("def", 3.14)
+    A = oiio.ImageBuf(specA)
+    print_imagespec (A.spec(), msg=" A's spec")
+    # specB has no abc, string def, and two camera attribs
+    specFull = oiio.ImageSpec(64, 64, 3, "uint8")
+    specFull.attribute("def", "Bfoo")
+    specFull.attribute("camera:x", "Bx")
+    specFull.attribute("camera:y", "By")
+    B = oiio.ImageBuf(specFull)
+    print_imagespec (B.spec(), msg=" B's spec")
+    print(" A full copy of A should have abc and def as A does:")
+    C = A.copy()
+    print_imagespec (C.spec(), msg=" result of C = A.copy():")
+    print(" A.copy_metadata(B) should be identical to B")
+    C = A.copy()
+    C.copy_metadata (B)
+    print_imagespec (C.spec(), msg=" result of A.copy_metadata(B):")
+    print(" A.merge_metadata(B) should have abc, def from A, camera from B")
+    C = A.copy()
+    C.merge_metadata (B)
+    print_imagespec (C.spec(), msg=" result of A.merge_metadata(B):")
+    print(" A.merge_metadata(B,True) should have abc from A, def and camera from B")
+    C = A.copy()
+    C.merge_metadata (B, override=True)
+    print_imagespec (C.spec(), msg=" result of A.merge_metadata(B, override=True):")
+    print(" A.merge_metadata(B,pattern) should have abc,def from A, camera from B")
+    C = A.copy()
+    C.merge_metadata (B, pattern="^camera:")
+    print_imagespec (C.spec(), msg=" result of A.merge_metadata(B, pattern='^camera:'):")
+
+
+# Test proper error handling for asking for out-of-range subimages or MIP levels.
+# Test with one format that supports neither subimages nor MIP levels,
+# and with one format that supports them, but the file we try has none.
+def test_outofrange_subimage_miplevel() :
+    print("\nTesting error handling for out-of-range subimage, miplevel")
+    for f in [ "bayer.png", "grid-small.exr", "tahoe-tiny.tif" ] :
+        buf = oiio.ImageBuf()
+        ok = buf.init_spec("../common/" + f, 1, 0)
+        print(" ", f, "subimage 1 mip 0:", ok, buf.geterror())
+        buf = oiio.ImageBuf()
+        ok = buf.init_spec("../common/" + f, 0, 0)
+        print(" ", f, "subimage 0 mip 0:", ok, buf.geterror())
+        buf = oiio.ImageBuf()
+        ok = buf.init_spec("../common/" + f, 0, 1)
+        print(" ", f, "subimage 0 mip 1:", ok, buf.geterror())
 
 
 
@@ -258,6 +331,9 @@ try:
     test_deep ()
     test_multiimage ()
     test_uninitialized ()
+    test_copy_metadata ()
+    test_repr_png ()
+    test_outofrange_subimage_miplevel ()
 
     print ("\nDone.")
 except Exception as detail:
